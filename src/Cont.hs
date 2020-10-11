@@ -8,6 +8,7 @@ import Control.Concurrent.MVar
 import Data.Array
 import Data.Maybe
 import Data.IORef
+import Data.Foldable
 
 data Cont a = forall i. Cont (IO i) (i -> a)
 
@@ -46,7 +47,7 @@ runAll :: [Cont a] -> IO [a]
 runAll conts = mapM run conts
 
 
-data Race i a = Race (MVar (i, a)) (Array i (Maybe ThreadId))
+data Race i a = Race (MVar (i, a)) (IORef (Array i (Maybe ThreadId)))
 
 
 runWithID :: MVar (i, a) -> (i, Cont a) -> IO ThreadId
@@ -62,31 +63,36 @@ withIx arr = array (bounds arr) (zip (indices arr) (assocs arr))
 mkRace :: Ix i => Array i (Cont a) -> IO (Race i a)
 mkRace conts = do
     mvar <- newEmptyMVar
-    tids <- mapM (runWithID mvar) (withIx conts)
-    pure $ Race mvar (Just <$> tids)
+    tidsPure <- mapM (runWithID mvar) (withIx conts)
+    tids <- newIORef (Just <$> tidsPure)
+    pure $ Race mvar tids
 
 
-runRace :: Ix i => Race i a -> IO (i, a, Race i a)
+runRace :: Ix i => Race i a -> IO (i, a)
 runRace (Race mvar tids) = do
     (id, x) <- takeMVar mvar
-    pure (id, x, Race mvar $ tids // [(id, Nothing)])
-
+    modifyIORef' tids (// [(id, Nothing)])
+    pure (id, x)
 
 killRace :: Race i a -> IO ()
-killRace (Race mvar tids) = mapM_ (mapM_ killThread) tids
+killRace (Race _ tids) = do
+    tidsPure <- readIORef tids
+    mapM_ (mapM_ killThread) tidsPure
+    modifyIORef' tids (Nothing <$)
 
 
-killId :: Ix i => Race i a -> i -> IO (Race i a)
-killId (Race mvar tids) id = do
-    mapM_ killThread (tids ! id)
-    pure $ Race mvar $ tids // [(id, Nothing)]
+killId :: Ix i => Race i a -> i -> IO ()
+killId (Race _ tids) id = do
+    tidsPure <- readIORef tids
+    mapM_ killThread (tidsPure ! id)
+    modifyIORef' tids (// [(id, Nothing)])
 
 
-addCont :: Ix i => (i, Cont a) -> Race i a -> IO (Race i a)
-addCont (id, cont) race@(Race mvar tids) = do
+addCont :: Ix i => i -> Cont a -> Race i a -> IO ()
+addCont id cont race@(Race mvar tids) = do
     killId race id
     tid <- runWithID mvar (id, cont)
-    pure $ Race mvar $ tids // [(id, Just tid)]
+    modifyIORef' tids (// [(id, Just tid)])
 
 
 cont1 = Cont (threadDelay 5000000 >> putChar '1') id
@@ -99,11 +105,11 @@ fromArray xs = array (0, length xs - 1) (zip [0..] xs)
 testConts = do
     race <- mkRace (fromArray [cont1, contSleep])
     putStrLn "Built race"
-    (i, x, race) <- runRace race
+    (i, x) <- runRace race
     putStrLn "Got result"
-    race <- addCont (i, cont1) race
+    addCont i cont1 race
     putStrLn "Added continuation"
-    (i, x, race) <- runRace race
+    (i, x) <- runRace race
     putStrLn "Got result 2"
     killRace race
     putStrLn "Done"
