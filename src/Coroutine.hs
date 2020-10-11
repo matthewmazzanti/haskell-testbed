@@ -1,187 +1,78 @@
-{-# LANGUAGE GADTs #-}
-
-import Control.Monad
-import Data.Maybe
+import Cont
+import Control.Monad.Free
 import Control.Concurrent hiding (yield)
-import Control.Concurrent.MVar
 import Data.Array
+import Data.Foldable
+import Data.Either
+import Data.IORef
 
-data Cnt a = forall i. Cnt (IO i) (i -> a)
+data GenF o a = Yield { _value :: Maybe o, _cont :: Cont a }
 
-instance Functor Cnt where
-  fmap fn (Cnt io cnt) = Cnt io (fn . cnt)
+instance Functor (GenF o) where
+  fmap fn (Yield x cont) = Yield x (fn <$> cont)
 
-runWith :: MVar a -> Cnt a -> IO ThreadId
-runWith mvar (Cnt io fn) = forkIO (io >>= putMVar mvar . fn)
+type Gen o r = Free (GenF o) r
+type Wait o r = GenF o (Gen o r)
 
-run :: Cnt a -> IO a
-run cnt = do
-    mvar <- newEmptyMVar
-    -- Run io on separate thread
-    tid <- runWith mvar cnt
-    -- Wait for results
-    takeMVar mvar
+await :: IO r -> Gen o r
+await io = Free $ Yield Nothing (Cont io pure)
 
-runBoth :: (Cnt a, Cnt b) -> IO (a, b)
-runBoth (cnt, cnt') = do
-    mvar <- newEmptyMVar
-    mvar' <- newEmptyMVar
+yield :: o -> IO r -> Gen o r
+yield x io = Free $ Yield (Just x) (Cont io pure)
 
-    runWith mvar cnt
-    runWith mvar' cnt'
+yield' :: Maybe o -> IO i -> (i -> Gen o r) -> Gen o r
+yield' x io next = Free $ Yield x $ Cont io next
 
-    i <- takeMVar mvar
-    i' <- takeMVar mvar'
+await' :: IO i -> (i -> Gen o r) -> Gen o r
+await' io next = Free $ Yield Nothing $ Cont io next
 
-    pure (i, i')
+step :: (Gen o r) -> Either r (Wait o r)
+step (Pure r) = Left r
+step (Free x) = Right x
 
-runAll :: [Cnt a] -> IO [a]
-runAll cnts = mapM run cnts
+stepOrr :: Traversable t => t (Gen o r) -> Either r (t (Wait o r))
+stepOrr = traverse step
 
-runWithID :: MVar (ThreadId, a) -> Cnt a -> IO ThreadId
-runWithID mvar (Cnt io fn) = forkIO $ do
-    i <- io
-    tid <- myThreadId
-    putMVar mvar (tid, fn i)
+collect :: (Monoid m, Foldable f) => f m -> m
+collect = foldr (<>) mempty
 
-data Race a = Race (MVar (ThreadId, a)) [(ThreadId, (Cnt a))]
+toArray :: [a] -> Array Int a
+toArray xs = array (0, length xs - 1) (zip [0..] xs)
 
-mkRace :: [Cnt a] -> IO (Race a)
-mkRace cnts = do
-    mvar <- newEmptyMVar
-    tids <- mapM (runWithID mvar) cnts
-    pure $ Race mvar (zip tids cnts)
+type Res o r = (Int, Gen o r, Race Int (Gen o r))
 
-killRace :: Race a -> IO ()
-killRace (Race _ tidCnts) = mapM_ (killThread . fst) tidCnts
-
-
-addCnt :: Cnt a -> Race a -> IO (Race a)
-addCnt cnt (Race mvar tidCnts) = do
-    tid <- runWithID mvar cnt
-    pure $ Race mvar ((tid, cnt) : tidCnts)
-
-
-runRace :: Race a -> IO (a, Race a)
-runRace race@(Race mvar tidCnts) = do
-    (tid, i) <- takeMVar mvar
-    pure (i, removeThread tid race)
+orr :: Semigroup o => [Gen o r] -> Gen o r
+orr [] = error "Non-empty list required"
+orr [co] = co
+orr gens = init $ stepOrr $ toArray gens
+  where
+    init :: Semigroup o => Either r (Array Int (Wait o r)) -> Gen o r
+    init (Left r)      = pure r
+    init (Right waits) = yield' (collect xs) io (loop xs)
       where
-        removeThread :: ThreadId -> Race a -> Race a
-        removeThread tid (Race mvar tidCnts) = Race mvar (filterTid tidCnts)
-          where filterTid = filter $ (tid /=) . fst
+        xs = _value <$> waits
+        io = mkRace (_cont <$> waits) >>= runRace
+
+    loop :: Semigroup o => Array Int (Maybe o) -> Res o r -> Gen o r
+    loop xs (id, gen, race)   = loopBody $ step gen
+      where
+        loopBody (Left r)     = await (killRace race) >> pure r
+        loopBody (Right wait) = yield' (collect xs') io (loop xs')
+          where xs' = (xs // [(id, _value wait)])
+                io  = addCont (id, (_cont wait)) race >> runRace race
 
 
+test i = do
+    yield [i] (threadDelay 1000000)
+    test (i + 1)
 
-data Gen o r = Done r
-                   | Await (Cnt (Gen o r))
-                   | Yield o (Cnt (Gen o r))
+test2 i = do
+    yield [i] (threadDelay 2000000)
+    test (i + 1)
 
-await io = Await $ Cnt io $ \x -> Done x
-yield x io = Yield x $ Cnt io $ \x -> Done x
-
-instance (Show o, Show r) => Show (Gen o r) where
-  show (Done r)       = "(Done " ++ show r ++ ")"
-  show (Await cnt)   = "(Await <io> <function>)"
-  show (Yield x cnt) = "(Yield " ++ show x ++ " <io> <function>)"
-
-instance Functor (Gen o) where
-  fmap fn (Done r)       = Done (fn r)
-  fmap fn (Await cnt)   = Await (fmap (fmap fn) cnt)
-  fmap fn (Yield x cnt) = Yield x (fmap (fmap fn) cnt)
-
-instance Applicative (Gen o) where
-  pure = Done
-
-  (Done fn)        <*> rest = fmap fn rest
-  (Await cnt)     <*> rest = Await (fmap (<*> rest) cnt)
-  (Yield x cnt)   <*> rest = Yield x (fmap (<*> rest) cnt)
-
-instance Monad (Gen o) where
-  (Done x)       >>= fn = fn x
-  (Await cnt)   >>= fn = Await (fmap (>>= fn) cnt)
-  (Yield x cnt) >>= fn = Yield x (fmap (>>= fn) cnt)
-
-
-
-getDone :: Gen o r -> Maybe r
-getDone (Done r) = Just r
-getDone _ = Nothing
-
-getYield :: Gen o r -> Maybe o
-getYield (Yield x _) = Just x
-getYield _ = Nothing
-
-getAwait :: Gen o r -> Maybe (Cnt (Gen o r))
-getAwait (Await cnt) = Just cnt
-getAwait (Yield _ cnt) = Just cnt
-getAwait _ = Nothing
-
-
-bothIO :: (IO a, IO b) -> IO (a, b)
-bothIO (io, io') = do
-    i <- io
-    i' <- io'
-    pure (i, i')
-
--- orr :: Monoid o => [Gen o r] -> Gen o r
--- orr [] = error "Non-empty list required"
--- orr [co] = co
--- orr cos = go dones
---   where dones = mapMaybe getDone cos
---         yields = mapMaybe getYield cos
---         awaits = mapMaybe getAwait cos
---         race = mkRace awaits
--- 
---         go (r:_) = Done r
---         go _ [] awaits = Await $ Cnt (runRace race) cntinue
---         go _ yields awaits = Yield (foldr (<>) mempty yields) $ Cnt (runRace race) cntinue
--- 
---         cntinue :: (Gen o r, Race (Gen o r)) -> Gen o r
---         cntinue (Done r, _) = Done r
-
-
-both :: Monoid o => Gen o r -> Gen o r -> Gen o r
-both (Done r) _ = Done r
-both _ (Done r) = Done r
-both (Await cnt) (Await cnt') = Await (bothCnt cnt cnt' both)
-both (Await cnt) (Yield x cnt') = Yield x (bothCnt cnt cnt' both)
-both (Yield x cnt) (Yield x' cnt') = Yield (x <> x') (bothCnt cnt cnt' both)
-
-bothCnt :: Cnt a -> Cnt b -> (a -> b -> c) -> Cnt c
-bothCnt cnt cnt' fn = Cnt (runBoth (cnt, cnt')) (uncurry fn)
-
-
-test = do
-    yield [30] (putStrLn "hello")
-    pure 40
-
-test2 = do
-    yield [30] (putStrLn "hello")
-    pure 20
-
-step :: (Show o, Show r) => Gen o r -> IO ()
-step co = case co of
-    Done r -> do
-        putStrLn $ "done " ++ (show r)
-    Await cnt -> do
-        putStrLn "awaiting"
-        next <- run cnt
-        step next
-    Yield x cnt -> do
+watch :: (Show o, Show r) => Gen o r -> IO ()
+watch gen = case gen of
+    Pure r -> putStrLn $ "done " ++ (show r)
+    Free (Yield x cont) -> do
         putStrLn $ "yielding: " ++ (show x)
-        next <- run cnt
-        step next
-
-cnt1 = Cnt (threadDelay 5000000 >> putChar '1') id
-cnt2 = Cnt (putChar '2') id
-cntSleep = Cnt (threadDelay 7500000 >> putChar '3') id
-
-testCnts = do
-    race <- mkRace [cnt1, cntSleep]
-    (_, race) <- runRace race
-    race <- addCnt cnt1 race
-    (_, race) <- runRace race
-    killRace race
-
-main = step test
+        run cont >>= watch

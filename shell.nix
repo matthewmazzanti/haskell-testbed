@@ -5,6 +5,7 @@ let
     QuickCheck
     comonad
     freer-simple
+    free
   ]);
 in pkgs.mkShell {
   buildInputs = with pkgs; [
