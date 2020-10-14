@@ -1,4 +1,4 @@
-module Cont where
+module Race where
 
 import Control.Monad
 import Control.Concurrent hiding (yield)
@@ -37,72 +37,88 @@ runBoth (io, io') = do
     pure (i, i')
 
 
-runAll :: [Cont a] -> IO [a]
+runAll :: Traversable t => t (IO a) -> IO (t a)
 runAll conts = mapM run conts
+
+
+
+type Tids i = IORef (Array i (Maybe ThreadId))
+
+
+clearTid :: Ix i => Tids i -> i -> IO ()
+clearTid tids id = modifyIORef' tids (// [(id, Nothing)])
+
+
+clearAll :: Tids i -> IO ()
+clearAll tids = modifyIORef' tids (Nothing <$)
+
+
+setTid :: Ix i => Tids i -> i -> ThreadId -> IO ()
+setTid tids id x = modifyIORef' tids (// [(id, Just x)])
+
 
 
 data Race i a = Race (MVar (i, a)) (IORef (Array i (Maybe ThreadId)))
 
 
-runWithID :: MVar (i, a) -> (i, Cont a) -> IO ThreadId
-runWithID mvar (id, (Cont io fn)) = forkIO $ do
+runWithID :: MVar (i, a) -> (i, IO a) -> IO ThreadId
+runWithID mvar (id, io) = forkIO $ do
     i <- io
-    putMVar mvar (id, fn i)
+    putMVar mvar (id, i)
 
 
 withIx :: Ix i => Array i e -> Array i (i, e)
 withIx arr = array (bounds arr) (zip (indices arr) (assocs arr))
 
 
-mkRace :: Ix i => Array i (Cont a) -> IO (Race i a)
-mkRace conts = do
+mkRace :: Ix i => Array i (IO a) -> IO (Race i a)
+mkRace ios = do
     mvar <- newEmptyMVar
-    tidsPure <- mapM (runWithID mvar) (withIx conts)
+    tidsPure <- mapM (runWithID mvar) (withIx ios)
     tids <- newIORef (Just <$> tidsPure)
-    pure $ Race mvar tids
+    pure (Race mvar tids)
 
 
 runRace :: Ix i => Race i a -> IO (i, a)
 runRace (Race mvar tids) = do
     (id, x) <- takeMVar mvar
-    modifyIORef' tids (// [(id, Nothing)])
+    clearTid tids id
     pure (id, x)
+
 
 killRace :: Race i a -> IO ()
 killRace (Race _ tids) = do
-    tidsPure <- readIORef tids
-    mapM_ (mapM_ killThread) tidsPure
-    modifyIORef' tids (Nothing <$)
+    readIORef tids >>= mapM_ (mapM_ killThread)
+    clearAll tids
 
 
 killId :: Ix i => Race i a -> i -> IO ()
 killId (Race _ tids) id = do
-    tidsPure <- readIORef tids
-    mapM_ killThread (tidsPure ! id)
-    modifyIORef' tids (// [(id, Nothing)])
+    readIORef tids >>= mapM_ killThread . (! id)
+    clearTid tids id
 
 
-addCont :: Ix i => i -> Cont a -> Race i a -> IO ()
-addCont id cont race@(Race mvar tids) = do
+addIO :: Ix i => i -> IO a -> Race i a -> IO ()
+addIO id io race@(Race mvar tids) = do
     killId race id
-    tid <- runWithID mvar (id, cont)
-    modifyIORef' tids (// [(id, Just tid)])
+    tid <- runWithID mvar (id, io)
+    setTid tids id tid
 
 
-cont1 = Cont (threadDelay 5000000 >> putChar '1') id
-cont2 = Cont (putChar '2') id
-contSleep = Cont (threadDelay 7500000 >> putChar '3') id
+io1 = threadDelay 5000000 >> putChar '1'
+io2 = putChar '2'
+ioSleep = threadDelay 7500000 >> putChar '3'
 
 fromArray :: [a] -> Array Int a
 fromArray xs = array (0, length xs - 1) (zip [0..] xs)
 
-testConts = do
-    race <- mkRace (fromArray [cont1, contSleep])
+test = do
+    race <- mkRace (fromArray [io1, ioSleep])
     putStrLn "Built race"
     (i, x) <- runRace race
     putStrLn "Got result"
-    addCont i cont1 race
-    putStrLn "Added continuation"
+    addIO i io1 race
+    putStrLn "Added IO"
     (i, x) <- runRace race
     putStrLn "Got result 2"
     killRace race

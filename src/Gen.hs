@@ -1,26 +1,25 @@
-import Cont
+import Race
 import Control.Monad.Free
-import Control.Concurrent hiding (yield)
 import Data.Array
-import Data.Foldable
-import Data.Either
-import Data.IORef
 
-data GenF o a = Yield { _val :: o, _cont :: Cont a }
+-- Remove
+import Control.Concurrent hiding (yield)
+
+data GenF o a = Yield { _val :: o, _io :: IO a }
 
 instance Functor (GenF o) where
-  fmap fn (Yield x cont) = Yield x (fn <$> cont)
+  fmap fn (Yield x io) = Yield x (fn <$> io)
 
 type Gen o r = Free (GenF o) r
-type Wait o r = GenF o (Gen o r)
 
 await :: Monoid o => IO r -> Gen o r
-await io = Free $ Yield mempty (Cont io pure)
+await io = Free $ Yield mempty (pure <$> io)
 
 yield :: Monoid o => o -> IO r -> Gen o r
-yield x io = Free $ Yield x (Cont io pure)
+yield x io = Free $ Yield x (pure <$> io)
 
 
+type Wait o r = GenF o (Gen o r)
 type Step o r = Either r (Wait o r)
 
 step :: (Gen o r) -> Either r (Wait o r)
@@ -34,8 +33,8 @@ stepOrr :: Traversable t => t (Gen o r) -> Steps t o r
 stepOrr = traverse step
 
 
-stepCont :: Wait o r -> Cont (Step o r)
-stepCont = (step <$>) . _cont
+stepIO :: Wait o r -> IO (Step o r)
+stepIO = (step <$>) . _io
 
 
 collect :: (Monoid m, Foldable f) => f m -> m
@@ -61,12 +60,14 @@ orr gens = init $ stepOrr $ toArray gens
         -- Get the initial values for the view
         let vals = _val <$> waits
 
-        -- Wait for the next value of the race to complete
-        race <- await $ mkRace (stepCont <$> waits)
-
-        -- Yield the initial view, and create a race for the child actions
-        next <- yield (collect vals) $ do
-            runRace race
+        -- Yield the initial view, and setup the race to run
+        (race, next) <- yield (collect vals) $ do
+            -- Create the race
+            race <- mkRace (stepIO <$> waits)
+            -- Run the race getting the next step
+            next <- runRace race
+            -- Return both race and next
+            pure (race, next)
 
         -- Loop!
         loop (race, vals) next
@@ -84,12 +85,11 @@ orr gens = init $ stepOrr $ toArray gens
 
         -- Yield the updated view, and wait for the next result
         next <- yield (collect vals') $ do
-            addCont id (stepCont wait) race
+            addIO id (stepIO wait) race
             runRace race
 
         -- Loop!
         loop (race, vals') next
-
 
 test1 i = do
     yield [i] $ do
@@ -101,6 +101,6 @@ test1 i = do
 watch :: (Show o, Show r) => Gen o r -> IO ()
 watch gen = case gen of
     Pure r -> putStrLn $ "done " ++ (show r)
-    Free (Yield x cont) -> do
+    Free (Yield x io) -> do
         putStrLn $ "yield: " ++ (show x)
-        run cont >>= watch
+        io >>= watch

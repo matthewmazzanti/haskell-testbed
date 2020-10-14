@@ -6,6 +6,7 @@ let
     comonad
     freer-simple
     free
+    mtl
   ]);
 in pkgs.mkShell {
   buildInputs = with pkgs; [
