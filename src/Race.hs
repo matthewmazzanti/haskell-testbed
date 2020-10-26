@@ -104,6 +104,8 @@ addIO id io race@(Race mvar tids) = do
     tid <- runWithID mvar (id, io)
     setTid tids id tid
 
+never :: IO ()
+never = newEmptyMVar >>= takeMVar
 
 io1 = threadDelay 5000000 >> putChar '1'
 io2 = putChar '2'

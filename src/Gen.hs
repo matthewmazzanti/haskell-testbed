@@ -1,9 +1,7 @@
-import Race
+import Control.Concurrent hiding (yield)
 import Control.Monad.Free
 import Data.Array
-
--- Remove
-import Control.Concurrent hiding (yield)
+import Race
 
 data GenF o a = Yield { _val :: o, _io :: IO a }
 
@@ -17,6 +15,9 @@ await io = Free $ Yield mempty (pure <$> io)
 
 yield :: Monoid o => o -> IO r -> Gen o r
 yield x io = Free $ Yield x (pure <$> io)
+
+display :: Monoid o => o -> Gen o ()
+display x = Free $ Yield x $ pure <$> (newEmptyMVar >>= takeMVar)
 
 
 type Wait o r = GenF o (Gen o r)
@@ -52,7 +53,7 @@ orr [] = error "Non-empty list required"
 -- With the monoid cosntraint on outputs, we can directly yield a single child
 orr [gen] = gen
 -- Create array for the generators, step them to get initial value, and run
-orr gens = init $ stepOrr $ toArray gens
+orr gens = init $ stepOrr (toArray gens)
   where
     init :: Monoid o => Steps (Array Int) o r -> Gen o r
     init (Left r)      = pure r
@@ -85,7 +86,9 @@ orr gens = init $ stepOrr $ toArray gens
 
         -- Yield the updated view, and wait for the next result
         next <- yield (collect vals') $ do
+            -- Add the next io into the race
             addIO id (stepIO wait) race
+            -- Get the next result
             runRace race
 
         -- Loop!
@@ -97,6 +100,7 @@ test1 i = do
 
     test1 (i + 1)
 
+test2 = display [100]
 
 watch :: (Show o, Show r) => Gen o r -> IO ()
 watch gen = case gen of
