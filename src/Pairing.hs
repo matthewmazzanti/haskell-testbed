@@ -1,6 +1,12 @@
-{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies #-}
+{-# LANGUAGE MultiParamTypeClasses
+  , FunctionalDependencies
+  , LambdaCase
+  , BlockArguments
+  #-}
 
 import Data.Function
+import Data.IORef
+import Control.Monad
 
 class Pairing f g | f -> g, g -> f where
   pair :: (a -> b -> r) -> f a -> g b -> r
@@ -77,60 +83,89 @@ instance Pairing Sequence Stream where
 move :: (Comonad w, Pairing m w) => w a -> m b -> w a
 move space movement = pair (flip const) movement (dup space)
 
+type UI a m = a (IO (m ()))
 
+type Component w a m = w (UI a m)
 
-data Tree a = Branch a (Tree a) (Tree a)
+data Console a = Console { _text :: String, _action :: a }
 
-instance Show a => Show (Tree a) where
-  show (Branch a (Branch b _ _) (Branch c _ _)) = "Branch (" ++ show a ++ ") (Branch (" ++ show b ++ ") (...) (...)) (Branch (" ++ show c ++ ") (...) (...))"
+explore :: (Comonad w, Pairing m w) => Component w Console m -> IO ()
+explore component = do
+    let (Console text action) = curr component
 
-instance Functor Tree where
-  fmap fn (Branch a l r) = Branch (fn a) (fmap fn l) (fmap fn r)
+    putStrLn text
+    movement <- action
+    explore (move component movement)
 
-instance Applicative Tree where
-  pure a = let x = Branch a x x in x
-
-  Branch fn lFn rFn <*> Branch a l r = Branch (fn a) (lFn <*> l) (rFn <*> r)
-
-instance Monad Tree where
-  Branch a _ _ >>= fn = fn a
-
-instance Comonad Tree where
-  curr (Branch a _ _) = a
-  dup tree@(Branch _ l r) = Branch tree (dup l) (dup r)
-
-int :: Tree Int
-int = let int' x = Branch x (int' $ x - 1) (int' $ x + 1) in int' 0
-
-
-data Path a = Fin a | Lft (Path a) | Rgt (Path a) deriving Show
-
-instance Functor Path where
-  fmap fn (Fin a)    = Fin (fn a)
-  fmap fn (Lft next) = Lft (fmap fn next)
-  fmap fn (Rgt next) = Rgt (fmap fn next)
-
-instance Applicative Path where
-  pure = Fin
-
-  Fin fn     <*> path = fn <$> path
-  Lft nextFn <*> path = Lft (nextFn <*> path)
-  Rgt nextFn <*> path = Rgt (nextFn <*> path)
-
-instance Monad Path where
-  Fin a    >>= fn = fn a
-  Lft next >>= fn = next >>= fn
-  Rgt next >>= fn = next >>= fn
-
-
-
-instance Pairing Path Tree where
-  pair fn (Fin a)    (Branch b _ _) = fn a b
-  pair fn (Lft next) (Branch _ l _) = pair fn next l
-  pair fn (Rgt next) (Branch _ _ r) = pair fn next r
-
-
-
-useless = useless' (Fin ())
+counter :: Component Stream Console Sequence
+counter = render <$> nat
   where
-    useless' x = Branch x (useless' $ x <$ Lft ()) (useless' $ x <$ Rgt ())
+    render :: Int -> UI Console Sequence
+    render state = Console (show state) $ do
+        getLine >>= pure . \case
+            "1" -> Next (End ())
+            "2" -> Next (Next (End ()))
+
+
+data Choices a = Choices [(a, String)]
+
+
+
+
+data Store s a = Store (s -> a) s
+
+instance Functor (Store s) where
+  fmap gn (Store fn s) = Store (gn . fn) s
+
+instance Comonad (Store s) where
+  curr (Store fn s) = fn s
+
+  dup (Store fn s) = Store (Store fn) s
+
+
+
+data State s a = State (s -> (s, a))
+
+instance Functor (State s) where
+  fmap gn (State fn) = State $ (gn <$>) . fn
+
+instance Applicative (State s) where
+  pure a = State $ \s -> (s, a)
+
+  State fnFn <*> State fn = State $ \s ->
+      let (s', gn) = fnFn s
+          (s'', a) = fn s'
+       in (s'', gn a)
+
+instance Monad (State s) where
+  State fn >>= gn = State $ \s ->
+      let (s', a) = fn s
+          State hn = gn a
+       in hn s'
+
+
+modify :: (s -> s) -> State s ()
+modify fn = State $ \s -> (fn s, ())
+
+
+put :: s -> State s ()
+put s = State $ \_ -> (s, ())
+
+
+get :: State s s
+get = State (\s -> (s, s))
+
+
+
+instance Pairing (State s) (Store s) where
+  pair fn (State gn) (Store hn s) = fn a b
+    where (s', a) = gn s
+          b = hn s'
+
+listCmpt :: Component (Store [String]) Console (State [String])
+listCmpt = Store render []
+  where
+    render :: [String] -> UI Console (State [String])
+    render list = Console ("Got: " ++ show list) $ do
+        input <- getLine
+        pure $ if input == "" then put [] else modify (++[input])

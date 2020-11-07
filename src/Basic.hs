@@ -1,9 +1,9 @@
 {-#
-    LANGUAGE NoImplicitPrelude
-    , MagicHash
+    LANGUAGE RebindableSyntax
 #-}
 
 import GHC.Exts
+import GHC.Integer
 
 infixr 0 $
 ($) :: (a -> b) -> a -> b
@@ -24,6 +24,7 @@ subsitute x y z = x z (y z)
 fix :: (a -> a) -> a
 fix fn = let x = fn x in x
 
+
 class Functor f where
   (<$>) :: (a -> b) -> f a -> f b
 
@@ -33,10 +34,15 @@ class Functor f where
 map :: Functor f => (a -> b) -> f a -> f b
 map = (<$>)
 
+
 class Functor f => Applicative f where
   pure :: a -> f a
 
   (<*>) :: f (a -> b) -> f a -> f b
+
+app :: Applicative f => f (a -> b) -> f a -> f b
+app = (<*>)
+
 
 class Applicative m => Monad m where
   (>>=) :: m a -> (a -> m b) -> m b
@@ -45,7 +51,7 @@ bind :: Monad m => m a -> (a -> m b) -> m b
 bind = (>>=)
 
 
-newtype Identity a = Identity { unwrap :: a }
+newtype Identity a = Identity { runIdentity :: a }
 
 instance Functor Identity where
   fn <$> Identity x = Identity (fn x)
@@ -57,6 +63,3 @@ instance Applicative Identity where
 
 instance Monad Identity where
   Identity x >>= fn = fn x
-
-test :: Int
-test = 1

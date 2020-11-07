@@ -7,6 +7,7 @@ let
     freer-simple
     free
     mtl
+    numeric-prelude
   ]);
 in pkgs.mkShell {
   buildInputs = with pkgs; [
