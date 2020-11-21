@@ -8,6 +8,8 @@ let
     free
     mtl
     numeric-prelude
+    containers
+    criterion
   ]);
 in pkgs.mkShell {
   buildInputs = with pkgs; [
