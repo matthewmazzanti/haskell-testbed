@@ -1,6 +1,8 @@
 {-# LANGUAGE TypeFamilies #-}
 
-import Prelude hiding (last, (!!))
+module Conc where
+
+import Prelude hiding (head, last, (!!))
 import GHC.Exts (IsList(..))
 import Data.Foldable (foldl', foldr')
 import Debug.Trace
@@ -9,7 +11,7 @@ import qualified Data.List as L
 data Cat a
     = Empty
     | Single a
-    | Pair !Int !Int (Cat a) (Cat a) deriving Show
+    | Pair !Int !Int !(Cat a) !(Cat a) deriving Show
 
 height :: Cat a -> Int
 height (Empty)        = 0
@@ -110,6 +112,11 @@ cons a = (pure a <>)
 snoc :: a -> Cat a -> Cat a
 snoc a = (<> pure a)
 
+head :: Cat a -> Maybe a
+head (Empty)        = Nothing
+head (Single a)     = Just a
+head (Pair _ _ l _) = head l
+
 last :: Cat a -> Maybe a
 last Empty      = Nothing
 last (Single a) = Just a
@@ -119,9 +126,13 @@ last (Pair _ _ _ r) = last r
 (!!) (Single a) 0 = Just a
 (!!) (Pair _ _ l r) n
   | n < 0      = Nothing
-  | n < size l = l !! n
-  | otherwise  = r !! (n - size l)
+  | n < sl = l !! n
+  | otherwise  = r !! (n - sl)
+  where sl = size l
 (!!) _ _ = Nothing
 
-l = ([1..100000000])::[Int]
-c = (fromList l)::Cat Int
+append :: Cat a -> a -> Cat a
+append cat x = cat <> pure x
+
+prepend :: Cat a -> a -> Cat a
+prepend cat x = pure x <> cat

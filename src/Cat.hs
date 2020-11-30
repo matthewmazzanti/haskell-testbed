@@ -14,7 +14,7 @@ instance Semigroup (ne a) => Semigroup (Nil ne a) where
   Nil as <> Nil bs = Nil (as <> bs)
 
 instance Semigroup (ne a) => Monoid (Nil ne a) where
-  mempty = Nil (Nothing)
+  mempty = Nil Nothing
 
 instance Functor ne => Functor (Nil ne) where
   fmap fn (Nil mne) = Nil ((fn <$>) <$> mne)
@@ -22,7 +22,7 @@ instance Functor ne => Functor (Nil ne) where
 instance Applicative ne => Applicative (Nil ne) where
   pure = Nil . Just . pure
 
-  Nil fns <*> Nil as = Nil (liftA2 (<*>) fns as)
+  Nil fns <*> Nil as = Nil ((<*>) <$> fns <*> as)
 
 
 data NonEmpty a
@@ -98,3 +98,4 @@ instance Foldable CatNE where
 instance Traversable CatNE where
   traverse fn (Leaf a) = Leaf <$> fn a
   traverse fn (Pair l r) = Pair <$> traverse fn l <*> traverse fn r
+

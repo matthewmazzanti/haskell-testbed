@@ -10,6 +10,7 @@ let
     numeric-prelude
     containers
     criterion
+    vector
   ]);
 in pkgs.mkShell {
   buildInputs = with pkgs; [
