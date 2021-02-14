@@ -7,8 +7,6 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Maybe
 import Control.Monad.State
-import Control.Applicative
-import Debug.Trace
 
 type Sym = Char
 
@@ -42,7 +40,7 @@ toNFA :: Regex -> NFA
 toNFA re = let (nfa, i) = conv 0 (Final i) re in nfa
   where
     conv :: Int -> NFA -> Regex -> (NFA, Int)
-    conv i next (Empty) = (next, i)
+    conv i next Empty = (next, i)
     conv i next (Lit c) = (Step i c next, i + 1)
 
     conv i next (And re re') = (nfa, k)
@@ -74,12 +72,12 @@ toNFA' re = let (nfa, i) = runState (conv re $ Final i) 0 in nfa
         pure (split, nfa)
 
     conv :: Regex -> NFA -> State Int NFA
-    conv (Empty) next      = pure next
+    conv Empty next      = pure next
     conv (Lit c) next      = Step <$> inc <*> pure c <*> pure next
     conv (And re re') next = conv re' next >>= conv re
     conv (Or re re') next  = Split <$> inc <*> conv re next <*> conv re' next
-    conv (Star re) next    = mkStar re next >>= pure . fst
-    conv (Plus re) next    = mkStar re next >>= pure . snd
+    conv (Star re) next    = fst <$> mkStar re next
+    conv (Plus re) next    = snd <$> mkStar re next
 
 type Closure = Set.Set NFA
 
@@ -173,7 +171,7 @@ toDFA nfa = evalState (conv $ closure nfa) Map.empty
         -- All of the unique symbols within this closure. Done to avoid having
         -- to guess all available characters.
         symsOf :: Closure -> [Sym]
-        symsOf = catMaybes . fmap symOf . Set.toList
+        symsOf = mapMaybe symOf . Set.toList
           where
             symOf :: NFA -> Maybe Sym
             symOf (Step _ sym _) = Just sym
@@ -189,6 +187,4 @@ runDFA [] dfa = Just dfa
 runDFA (sym:syms) (DFA _ edges) = Map.lookup sym edges >>= runDFA syms
 
 matchDFA :: DFA -> [Sym] -> Bool
-matchDFA dfa syms = case runDFA syms dfa of
-    Just dfa -> hasFinalDFA dfa
-    Nothing -> False
+matchDFA dfa syms = maybe False hasFinalDFA $ runDFA syms dfa

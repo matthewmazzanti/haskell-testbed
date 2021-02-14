@@ -81,7 +81,7 @@ instance Pairing Sequence Stream where
 
 
 move :: (Comonad w, Pairing m w) => w a -> m b -> w a
-move space movement = pair (flip const) movement (dup space)
+move space movement = pair (\_ x -> x) movement (dup space)
 
 type UI a m = a (IO (m ()))
 

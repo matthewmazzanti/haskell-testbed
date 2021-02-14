@@ -11,9 +11,11 @@ let
     containers
     criterion
     vector
+    hashable
   ]);
 in pkgs.mkShell {
   buildInputs = with pkgs; [
     ghcWithPackages
+    haskell-language-server
   ];
 }

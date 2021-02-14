@@ -4,6 +4,7 @@
   , BlockArguments
   #-}
 
+import Data.Functor.Classes (Show1)
 import Control.Monad.Free
 import Control.Comonad.Cofree
 
@@ -29,6 +30,11 @@ data AdderF a
     | Clear a
     | Total (Int -> a)
 
+printAdder :: Show a => Adder a -> String
+printAdder (Pure a) = "Pure " <> show a
+printAdder (Free (Add i _)) = "Add " <> show i
+printAdder (Free (Clear _)) = "Clear"
+printAdder (Free (Total _)) = "Total"
 
 instance Functor AdderF where
   fmap fn (Add i gn) = Add i (fn . gn)
@@ -114,10 +120,10 @@ instance Pairing CoAdderF AdderF where
 
 
 interpret' :: Limit -> Count -> Adder r -> r
-interpret' limit count adder = pair (\_ b -> b) (mkCoAdder limit count) adder
+interpret' limit count = pair (\_ b -> b) (mkCoAdder limit count)
 
 interpretIO :: Limit -> Count -> Adder r -> r
-interpretIO limit count adder = pair (\_ b -> b) coadder adder
+interpretIO limit count = pair (\_ b -> b) coadder
   where coadder = mkCoAdder limit count
 
 test = do
