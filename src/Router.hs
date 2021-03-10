@@ -12,8 +12,6 @@ event = Event []
 pushIndex :: Int -> Event a -> Event a
 pushIndex ix (Event ixs a) = Event (ix:ixs) a
 
-data View2 a = View [Int] Bool (IO a)
-
 data View a = Run (IO a) | Multi [IO a]
 
 instance Functor View where

@@ -1,0 +1,50 @@
+data Dyck = Fail | Pair Bool Bool [Dyck] deriving Show
+
+data Zip = Top Bool Bool [Dyck] | Zip Bool [Dyck] Zip deriving Show
+
+zipL :: Dyck -> Zip
+zipL dyck = go (Top dyck) dyck
+  where
+    go :: Zip -> Dyck -> Zip
+    go zip (Pair _ True _) = zip
+    go zip (Pair l _ []) = Zip l [] zip
+    go zip (Pair l _ cs) = Zip l (tail cs) (go zip $ head cs)
+
+zipR :: Dyck -> Zip
+zipR dyck = go (Top dyck) dyck
+  where
+    go :: Zip -> Dyck -> Zip
+    go zip (Pair True _ _) = zip
+    go zip (Pair _ r []) = Zip r [] zip
+    go zip (Pair _ r cs) = Zip r (init cs) (go zip $ last cs)
+
+zipPair :: Zip -> Zip -> Dyck
+zipPair (Top l) (Top r) = Pair False False [l, r]
+zipPair (Zip True cls zipl) (Zip True crs zipr) = zipPairWith dyck zipl zipr
+  where dyck = Pair False False [Pair True True (cls <> crs)]
+zipPair (Zip l cls zipl) (Zip r crs zipr) = zipPairWith dyck zipl zipr
+  where dyck = Pair l r (cls <> crs)
+zipPair _ _ = Fail
+
+zipPairWith :: Dyck -> Zip -> Zip -> Dyck
+zipPairWith dyck (Top _) (Top _) = dyck
+
+zipPairWith dyck (Zip l cls zipl) (Zip r crs zipr) = zipPairWith dyck zipl zipr
+  where dyck' = Pair l r (cls <> [dyck] <> crs)
+
+zipPairWith dyck top@(Top _) (Zip r crs zipr) = zipPairWith dyck' top zipr
+  where dyck' = Pair False r ([dyck] <> crs)
+
+zipPairWith dyck (Zip l cs zip) top@(Top _) = zipPairWith dyck' zip top
+  where dyck' = Pair l False (cs <> [dyck])
+
+
+fromChar :: Char -> Dyck
+fromChar '(' = Pair True False []
+fromChar ')' = Pair False True []
+
+pair :: Dyck -> Dyck -> Dyck
+pair l r = zipPair (zipL l) (zipR r)
+
+l = fromChar '('
+r = fromChar ')'
